@@ -1,0 +1,316 @@
+import math
+import random
+import datetime
+
+
+
+class Student:
+
+    ZPD_BELOW = 0.10    # challenge this far *below* current knowledge -> too easy, no growth
+    ZPD_ABOVE = 0.25    # challenge this far *above* current knowledge -> too hard, no growth
+
+    ATTENTION_DECAY       = 0.003   # passive attention decay per step
+    ATTENTION_NOISE_SCALE = 0.012   # sd of random normal noise added each step
+    DISTRACTOR_EFFECT     = 0.006   # attention penalty per 1/distance from nearby distractor
+    DISTRACTOR_MAX_DIST   = 2.0     # max distance at which distractors have an effect
+    TEACHER_BOOST         = 0.10    # attention gain per unit of teacher share received
+    ATTENTION_THRESHOLD   = 0.30    # attention below this -> student becomes a distractor
+
+    KNOWLEDGE_RATE = 0.005  # base knowledge gain per step when attentive and in ZPD
+    PEER_BONUS     = 0.002  # bonus per attentive neighbour within PEER_MAX_DIST seats
+    PEER_MAX_DIST  = 1.5    # seat distance threshold for peer interaction
+
+    def __init__(self, student_id, row, col, knowledge=random.uniform(0.0, 0.4), attention=random.uniform(0.4, 0.9)):
+        self.student_id    = student_id
+        self.row           = row
+        self.col           = col
+        self.knowledge     = knowledge
+        self.attention     = attention
+        self.is_distractor = self.attention < self.ATTENTION_THRESHOLD
+
+
+    def update_attention(self, teacher_share, neighbours):
+        """
+        teacher_share: float - This student's fraction of total teacher attention.
+        neighbours: list of (SnapStudent, float)
+            (snapshot_proxy, seat_distance) pairs for every other student.
+            Distractor flags are frozen to the start-of-step snapshot so all
+            updates are synchronous.
+        """
+        delta = 0.0
+
+        # Teacher attention provides a stabilising boost
+        delta += teacher_share * self.TEACHER_BOOST
+
+        # Passive attentional decay
+        delta -= self.ATTENTION_DECAY
+
+        # Nearby distractors reduce attention; effect drops off with distance and is capped at DISTRACTOR_MAX_DIST
+        for other, dist in neighbours:
+            if other.is_distractor and 0 < dist <= self.DISTRACTOR_MAX_DIST:
+                delta -= self.DISTRACTOR_EFFECT / dist
+
+        # Random variation. Comment to reduce stochasticity:
+        delta += random.gauss(0.0, self.ATTENTION_NOISE_SCALE)
+
+        self.attention     = max(0.0, min(1.0, self.attention + delta))
+        self.is_distractor = self.attention < self.ATTENTION_THRESHOLD
+
+
+    def update_knowledge(self, challenge_level, neighbours):
+        """
+        Advance knowledge if the student is attentive and challenge is in ZPD.
+
+        challenge_level: float - current environment challenge level in [0, 1]
+        neighbours: list of (SnapStudent, float)
+        """
+        if self.is_distractor:
+            return  # distracted students do not learn
+
+        diff = challenge_level - self.knowledge
+        in_zpd = (-self.ZPD_BELOW <= diff <= self.ZPD_ABOVE)
+        if not in_zpd:
+            return
+
+        gain = self.KNOWLEDGE_RATE
+
+        # Peer interaction bonus from attentive nearby classmates
+        for other, dist in neighbours:
+            if not other.is_distractor and dist <= self.PEER_MAX_DIST:
+                gain += self.PEER_BONUS
+
+        self.knowledge = min(1.0, self.knowledge + gain)
+
+
+    def seat_distance(self, other):
+
+        return math.dist((self.row, self.col), (other.row, other.col))
+
+
+
+class SnapStudent:
+    """
+    Frozen view of a student at the beginning of an iteration
+    """
+    __slots__ = ("is_distractor", "knowledge", "row", "col", "student_id")
+
+    def __init__(self, student, snap_distractor):
+        self.is_distractor = snap_distractor
+        self.knowledge     = student.knowledge
+        self.row           = student.row
+        self.col           = student.col
+        self.student_id    = student.student_id
+
+
+
+class Classroom:
+    """
+    rows, cols      : int - seating grid dimensions
+    n_students      : int - number of students
+    attention_mode  : str - 'uniform' | 'equitable' | 'favoritism'
+                               uniform : every student gets an equal share
+                               equitable : students with lower knowledge get more
+                               favoritism : a fixed subset receives a disproportionate share
+    favoritism_n    : int - size of the favoured group (favoritism mode only)
+    favoritism_share: float - fraction of total attention going to the favoured group.
+    iterations      : int - default number of steps for run()
+    log_path        : str - path for the log file (.txt)
+    """
+
+    CHALLENGE_GROWTH_RATE = 0.001   # challenge tracks mean class knowledge over time
+    CHALLENGE_NOISE_SCALE = 0.003   # sd of per-step challenge fluctuation
+
+    def __init__(
+        self,
+        rows=4,
+        cols=5,
+        n_students=20,
+        attention_mode="uniform",
+        favoritism_n=3,
+        favoritism_share=0.5,
+        iterations=200,
+        log_path="classroom_log.txt"
+    ):
+
+        self.rows             = rows
+        self.cols             = cols
+        self.n_students       = n_students
+        self.attention_mode   = attention_mode
+        self.favoritism_n     = favoritism_n
+        self.favoritism_share = favoritism_share
+        self.iterations       = iterations
+        self.log_path         = log_path
+
+        self.students         = []
+        self.challenge_level  = 0.15
+        self.iteration        = 0
+        self._metrics_history = []
+        self._log_lines       = []
+        self._dist_cache      = {}   # keyed (student_id_a, student_id_b)
+
+        self._place_students()
+        self._precompute_distances()
+
+        # Assign the favoured cohort once at initialisation
+        if self.attention_mode == "favoritism":
+            self._favoured = set(
+                s.student_id
+                for s in random.sample(self.students, min(favoritism_n, n_students))
+            )
+        else:
+            self._favoured = set()
+
+        self._write_log_header()
+
+
+    def _place_students(self):
+        seats = [(r, c) for r in range(self.rows) for c in range(self.cols)]
+        random.shuffle(seats)
+        for i in range(self.n_students):
+            r, c = seats[i]
+            self.students.append(Student(i, r, c))
+
+
+    def _precompute_distances(self):
+        """Seat distances are fixed - cache them once at init."""
+        for s in self.students:
+            for other in self.students:
+                if s is not other:
+                    self._dist_cache[(s.student_id, other.student_id)] = (s.seat_distance(other))
+
+
+    def _distribute_teacher_attention(self):
+        """Return {student_id: share} where all shares sum to 1.0."""
+        n      = len(self.students)
+        shares = {}
+
+        if self.attention_mode == "uniform":
+            for s in self.students:
+                shares[s.student_id] = 1.0 / n
+
+        elif self.attention_mode == "equitable":
+            weights = [max(0.0, 1.0 - s.knowledge) for s in self.students]
+            total   = sum(weights) or 1.0
+            for s, w in zip(self.students, weights):
+                shares[s.student_id] = w / total
+
+        elif self.attention_mode == "favoritism":
+            n_fav  = len(self._favoured)
+            n_rest = n - n_fav
+            fav_each  = self.favoritism_share / n_fav   if n_fav  else 0.0
+            rest_each = (1.0 - self.favoritism_share) / n_rest if n_rest else 0.0
+            for s in self.students:
+                shares[s.student_id] = (
+                    fav_each if s.student_id in self._favoured else rest_each
+                )
+
+        return shares
+
+
+    def step(self):
+        """Advance the simulation by one iteration."""
+        self.iteration += 1
+        teacher_shares = self._distribute_teacher_attention()
+
+        # Freeze distractor flags so all agents update synchronously
+        distractor_snap = {s.student_id: s.is_distractor for s in self.students}
+
+        # Build neighbour lists with snapshot proxies (distances are fixed)
+        nbr_cache = {}
+        for s in self.students:
+            nbr_cache[s.student_id] = [
+                (SnapStudent(other, distractor_snap[other.student_id]),
+                 self._dist_cache[(s.student_id, other.student_id)])
+                for other in self.students if other is not s]
+
+        # Apply updates
+        for s in self.students:
+            s.update_attention(teacher_shares[s.student_id], nbr_cache[s.student_id])
+
+        for s in self.students:
+            s.update_knowledge(self.challenge_level, nbr_cache[s.student_id])
+
+        # Advance environment challenge level (tracks mean class knowledge)
+        mean_k = sum(s.knowledge for s in self.students) / len(self.students)
+        self.challenge_level = max(
+            0.05,
+            min(1.0,
+                self.challenge_level
+                + self.CHALLENGE_GROWTH_RATE * mean_k
+                + random.gauss(0.0, self.CHALLENGE_NOISE_SCALE))
+        )
+
+        self._record_metrics(mean_k)
+
+
+    def _record_metrics(self, mean_knowledge):
+        n              = len(self.students)
+        n_distractors  = sum(s.is_distractor for s in self.students)
+        mean_attention = sum(s.attention for s in self.students) / n
+
+        metrics = {
+            "iteration"      : self.iteration,
+            "mean_knowledge" : round(mean_knowledge, 4),
+            "mean_attention" : round(mean_attention, 4),
+            "n_distractors"  : n_distractors,
+            "challenge_level": round(self.challenge_level, 4),
+        }
+        self._metrics_history.append(metrics)
+
+        self._log(
+            f"[{self.iteration:03d}]  "
+            f"knowledge={metrics['mean_knowledge']:.4f}  "
+            f"attention={metrics['mean_attention']:.4f}  "
+            f"distractors={n_distractors:02d}/{n}  "
+            f"challenge={metrics['challenge_level']:.4f}"
+        )
+
+
+    def _write_log_header(self):
+        fav_note = (
+            f"  (favoured n={self.favoritism_n}, "
+            f"share={self.favoritism_share:.0%}, "
+            f"ids={sorted(self._favoured)})"
+            if self.attention_mode == "favoritism" else ""
+        )
+        self._log("=" * 80)
+        self._log(f"Started       : {datetime.datetime.now().isoformat(timespec='seconds')}")
+        self._log(f"Grid          : {self.rows} rows x {self.cols} cols")
+        self._log(f"Students      : {self.n_students}")
+        self._log(f"Attention mode: {self.attention_mode}{fav_note}")
+        self._log(f"Iterations    : {self.iterations}")
+        self._log("-" * 80)
+
+    def _log(self, line):
+        self._log_lines.append(line)
+
+    def _flush_log(self):
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(self._log_lines))
+            f.write("\n")
+
+
+    def run(self):
+
+        for _ in range(self.iterations):
+            self.step()
+
+        final = self._metrics_history[-1]
+        self._log("=" * 80)
+        self._log("\n\n\n")
+        self._flush_log()
+        print(f"Simulation finished ({self.iteration} steps). Log: {self.log_path}")
+
+
+if __name__ == "__main__":
+    sim = Classroom(
+        rows=4,
+        cols=5,
+        n_students=20,
+        attention_mode="equitable",   # "uniform" | "equitable" | "favoritism"
+        favoritism_n=4,
+        favoritism_share=0.35,
+        iterations=9999,
+        log_path="classroom_log.txt"
+    )
+    sim.run()
