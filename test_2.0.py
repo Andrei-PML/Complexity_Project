@@ -11,7 +11,7 @@ class Student:
 
     ATTENTION_DECAY       = 0.003   # passive attention decay per step
     ATTENTION_NOISE_SCALE = 0.012   # sd of random normal noise added each step
-    DISTRACTOR_EFFECT     = 0.6   # attention penalty per 1/distance from nearby distractor
+    DISTRACTOR_EFFECT     = 0.6     # attention penalty per 1/distance from nearby distractor
     DISTRACTOR_MAX_DIST   = 2.0     # max distance at which distractors have an effect
     TEACHER_BOOST         = 0.10    # attention gain per unit of teacher share received
     ATTENTION_THRESHOLD   = 0.30    # attention below this -> student becomes a distractor
@@ -107,12 +107,6 @@ class Classroom:
     """
     rows, cols      : int - seating grid dimensions
     n_students      : int - number of students
-    attention_mode  : str - 'uniform' | 'equitable' | 'favoritism'
-                               uniform : every student gets an equal share
-                               equitable : students with lower knowledge get more
-                               favoritism : a fixed subset receives a disproportionate share
-    favoritism_n    : int - size of the favoured group (favoritism mode only)
-    favoritism_share: float - fraction of total attention going to the favoured group.
     iterations      : int - default number of steps for run()
     log_path        : str - path for the log file (.txt)
     """
@@ -125,9 +119,6 @@ class Classroom:
         rows=4,
         cols=5,
         n_students=20,
-        attention_mode="uniform",
-        favoritism_n=3,
-        favoritism_share=0.5,
         iterations=200,
         log_path="classroom_log.txt"
     ):
@@ -135,9 +126,6 @@ class Classroom:
         self.rows             = rows
         self.cols             = cols
         self.n_students       = n_students
-        self.attention_mode   = attention_mode
-        self.favoritism_n     = favoritism_n
-        self.favoritism_share = favoritism_share
         self.iterations       = iterations
         self.log_path         = log_path
 
@@ -150,16 +138,6 @@ class Classroom:
 
         self._place_students()
         self._precompute_distances()
-
-        # Assign the favoured cohort once at initialisation
-        if self.attention_mode == "favoritism":
-            self._favoured = set(
-                s.student_id
-                for s in random.sample(self.students, min(favoritism_n, n_students))
-            )
-        else:
-            self._favoured = set()
-
         self._write_log_header()
 
 
@@ -184,25 +162,10 @@ class Classroom:
         n      = len(self.students)
         shares = {}
 
-        if self.attention_mode == "uniform":
-            for s in self.students:
-                shares[s.student_id] = 1.0 / n
-
-        elif self.attention_mode == "equitable":
-            weights = [max(0.0, 1.0 - s.knowledge) for s in self.students]
-            total   = sum(weights) or 1.0
-            for s, w in zip(self.students, weights):
-                shares[s.student_id] = w / total
-
-        elif self.attention_mode == "favoritism":
-            n_fav  = len(self._favoured)
-            n_rest = n - n_fav
-            fav_each  = self.favoritism_share / n_fav   if n_fav  else 0.0
-            rest_each = (1.0 - self.favoritism_share) / n_rest if n_rest else 0.0
-            for s in self.students:
-                shares[s.student_id] = (
-                    fav_each if s.student_id in self._favoured else rest_each
-                )
+        weights = [max(0.0, 1.0 - s.knowledge) for s in self.students]
+        total   = sum(weights) or 1.0
+        for s, w in zip(self.students, weights):
+            shares[s.student_id] = w / total
 
         return shares
 
@@ -264,17 +227,11 @@ class Classroom:
 
 
     def _write_log_header(self):
-        fav_note = (
-            f"  (favored n={self.favoritism_n}, "
-            f"share={self.favoritism_share:.0%}, "
-            f"ids={sorted(self._favoured)})"
-            if self.attention_mode == "favoritism" else ""
-        )
+
         self._log("=" * 80)
         self._log(f"Started       : {datetime.datetime.now().isoformat(timespec='seconds')}")
         self._log(f"Grid          : {self.rows} rows x {self.cols} cols")
         self._log(f"Students      : {self.n_students}")
-        self._log(f"Attention mode: {self.attention_mode}{fav_note}")
         self._log(f"Iterations    : {self.iterations}")
         self._log("-" * 80)
 
@@ -304,10 +261,7 @@ if __name__ == "__main__":
         rows=4,
         cols=5,
         n_students=20,
-        attention_mode="uniform",   # "uniform" | "equitable" | "favoritism"
-        favoritism_n=3,
-        favoritism_share=0.3,
-        iterations=1000,
+        iterations=200,
         log_path="classroom_log.txt"
     )
     sim.run()
