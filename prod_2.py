@@ -7,17 +7,17 @@ import matplotlib.pyplot as plt
 
 class Student:
 
-    ZPD_BELOW = 0.20    # challenge this far *below* current knowledge -> too easy, no growth
-    ZPD_ABOVE = 0.40    # challenge this far *above* current knowledge -> too hard, no growth
+    ZPD_BELOW = 0.10    # challenge this far *below* current knowledge -> too easy, no growth
+    ZPD_ABOVE = 0.30    # challenge this far *above* current knowledge -> too hard, no growth
 
-    ATTENTION_DECAY       = 0.005   # passive attention decay per step
-    ATTENTION_NOISE_SCALE = 0.012   # sd of random normal noise added each step
-    DISTRACTOR_MAX_DIST   = 2.0     # max distance at which distractors have an effect
-    ATTENTION_THRESHOLD   = 0.30    # attention below this -> student becomes a distractor
+    ATTENTION_DECAY       = 0.006   # passive attention decay per step
+    ATTENTION_NOISE_SCALE = 0.005   # sd of random normal noise added each step
+    DISTRACTOR_MAX_DIST   = 2.5     # max distance at which distractors have an effect
+    ATTENTION_THRESHOLD   = 0.38    # attention below this -> student becomes a distractor
 
-    KNOWLEDGE_RATE = 0.003  # base knowledge gain per step when attentive and in ZPD
-    PEER_BONUS     = 0.002  # bonus per attentive neighbour within PEER_MAX_DIST seats
-    PEER_MAX_DIST  = 1.5    # seat distance threshold for peer interaction
+    KNOWLEDGE_RATE = 0.002  # base knowledge gain per step when attentive and in ZPD
+    PEER_BONUS     = 0.0015  # bonus per attentive neighbour within PEER_MAX_DIST seats
+    PEER_MAX_DIST  = 2    # seat distance threshold for peer interaction
 
     def __init__(self, student_id, row, col, teacher_boost, distractor_effect, knowledge=random.uniform(0.0, 0.4), attention=random.uniform(0.4, 0.9)):
         self.student_id    = student_id
@@ -107,8 +107,8 @@ class SnapStudent:
 
 class Classroom:
 
-    CHALLENGE_GROWTH_RATE = 0.0002   # increase in challenger per iteration
-    CHALLENGE_NOISE_SCALE = 0.007    # sd of per-step challenge fluctuation
+    CHALLENGE_GROWTH_RATE = 0.0006   # increase in challenger per iteration
+    CHALLENGE_NOISE_SCALE = 0.003    # sd of per-step challenge fluctuation
 
     def __init__(
         self,
@@ -239,8 +239,8 @@ if __name__ == "__main__":
 
     random.seed(2696)
 
-    teacher_boost_values =      [0.0, 0.05, 0.10, 0.15, 0.20, 0.25]
-    distractor_effect_values = [0.0, 0.30, 0.60, 0.90, 1.20, 1.50]
+    teacher_boost_values =     [0.07, 0.08, 0.09, 0.10, 0.11, 0.12]
+    distractor_effect_values = [0.80, 0.90, 1.00, 1.10, 1.20, 1.30]
 
     fig, axes = plt.subplots(6, 6, figsize=(18, 18), sharex=True, sharey=True)
 
@@ -251,7 +251,7 @@ if __name__ == "__main__":
                 rows=4,
                 cols=5,
                 n_students=20,
-                iterations=1000,
+                iterations=2000,
                 teacher_boost=tb,
                 distractor_effect=de
             )
